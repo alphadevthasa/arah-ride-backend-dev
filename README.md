@@ -1,6 +1,28 @@
 # ArahRide — server Go demo
 
-Server lokal ini menghubungkan Arah Customer dan Arah Driver dari [Android](../Android/ArahRide/README.md) maupun [iOS](../IOS/ArahRide/README.md). Ini **bukan backend produksi**: satu Driver, satu pesanan aktif, memori proses saja, tanpa akun atau otorisasi. Default hanya mendengar di `127.0.0.1:18080`.
+Server lokal ini menghubungkan Arah Customer dan Arah Driver dari aplikasi Android maupun iOS. Ini **bukan backend produksi**: satu Driver, satu pesanan aktif, memori proses saja, tanpa akun atau otorisasi. Default hanya mendengar di `127.0.0.1:18080`.
+
+## Arsitektur
+
+```mermaid
+flowchart LR
+  C[Customer app] -->|HTTP + WebSocket| API[Go API net/http]
+  D[Driver app] -->|HTTP + WebSocket| API
+  API --> HUB[In-memory hub<br/>dispatch · timer · presence · WS fan-out]
+  HUB --> OSRM[OSRM-compatible routing]
+  HUB --> GEO[Photon / Nominatim geocoding]
+```
+
+Klien mengirim aksi ride lewat HTTP (`/v1/quotes`, `/v1/actions`) dan menerima snapshot live lewat WebSocket (`/v1/events`). Semua dispatch, timer, presence, dan fan-out berjalan di satu proses.
+
+## Tech stack
+
+- **Bahasa:** Go 1.23
+- **HTTP:** `net/http` (stdlib)
+- **WebSocket:** `github.com/coder/websocket`
+- **Routing:** OSRM-compatible (default `router.project-osrm.org`)
+- **Geocoding:** Photon / Nominatim (`ARAH_GEOCODER_URL`)
+- **State:** in-memory hub, satu proses (tanpa database)
 
 ## Jalankan
 
