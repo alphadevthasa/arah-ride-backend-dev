@@ -1,90 +1,98 @@
-# ArahRide — server Go demo
+# ArahRide — Demo Go Server
 
-Server lokal ini menghubungkan Arah Customer dan Arah Driver dari aplikasi Android maupun iOS. Ini **bukan backend produksi**: satu Driver, satu pesanan aktif, memori proses saja, tanpa akun atau otorisasi. Default hanya mendengar di `127.0.0.1:18080`.
+This local server connects Arah Customer and Arah Driver apps on Android and iOS. It is **not a production backend**: it supports one Driver and one active order, keeps state in process memory, and has no accounts or authorization. By default, it listens only on 127.0.0.1:18080.
 
-## Arsitektur
+## Architecture
 
-```mermaid
+~~~mermaid
 flowchart LR
   C[Customer app] -->|HTTP + WebSocket| API[Go API net/http]
   D[Driver app] -->|HTTP + WebSocket| API
   API --> HUB[In-memory hub<br/>dispatch · timer · presence · WS fan-out]
   HUB --> OSRM[OSRM-compatible routing]
   HUB --> GEO[Photon / Nominatim geocoding]
-```
+~~~
 
-Klien mengirim aksi ride lewat HTTP (`/v1/quotes`, `/v1/actions`) dan menerima snapshot live lewat WebSocket (`/v1/events`). Semua dispatch, timer, presence, dan fan-out berjalan di satu proses.
+Clients send ride actions over HTTP (/v1/quotes and /v1/actions) and receive live snapshots over WebSocket (/v1/events). Dispatch, timers, presence, and fan-out all run in a single process.
 
 ## Tech stack
 
-- **Bahasa:** Go 1.23
-- **HTTP:** `net/http` (stdlib)
-- **WebSocket:** `github.com/coder/websocket`
-- **Routing:** OSRM-compatible (default `router.project-osrm.org`)
-- **Geocoding:** Photon / Nominatim (`ARAH_GEOCODER_URL`)
-- **State:** in-memory hub, satu proses (tanpa database)
+- **Language:** Go 1.23
+- **HTTP:** net/http (standard library)
+- **WebSocket:** github.com/coder/websocket
+- **Routing:** OSRM-compatible (router.project-osrm.org by default)
+- **Geocoding:** Photon / Nominatim (ARAH_GEOCODER_URL)
+- **State:** In-memory hub in one process (no database)
 
-## Jalankan
+## Run the server
 
-Memerlukan Go 1.23 atau lebih baru (`brew install go` di macOS).
+Requires Go 1.23 or later (brew install go on macOS).
 
-```sh
+~~~sh
 go mod download
 go run .
-```
+~~~
 
-Untuk perangkat fisik di LAN pengembangan:
+For a physical device on a development LAN:
 
-```sh
+~~~sh
 ARAH_ADDR=0.0.0.0:18080 go run .
-```
+~~~
 
-Jangan buka port server demo ke internet. Untuk verifikasi: `go test ./...` dan `curl http://127.0.0.1:18080/health`.
+Do not expose the demo server port to the internet. To verify it, run go test ./... and curl http://127.0.0.1:18080/health.
 
-## Kontrak prototipe
+## Prototype API
 
-- `GET /v1/state` → snapshot terkini.
-- `POST /v1/actions` → satu aksi dengan JSON `role`, `action`, dan titik opsional.
-- `GET /v1/events?role=customer|driver` → WebSocket yang mengirim snapshot awal dan setiap perubahan.
+- GET /v1/state → the current snapshot.
+- POST /v1/actions → one action with JSON role, action, and an optional point.
+- GET /v1/events?role=customer|driver → a WebSocket that sends the initial snapshot and each subsequent change.
 
-Status: `requested`, `accepted`, `arrived`, `in_progress`, `completed`, `cancelled`.
-Aksi Customer: `create` (butuh `pickup` dan `dropoff`), `cancel`, `reset`.
-Aksi Driver: `online`, `offline`, `accept`, `arrive`, `start`, `complete`, `location` (butuh `location`).
-Titik menggunakan JSON `{"latitude":-6.2088,"longitude":106.8456}`. Snapshot berisi `sequence`, `driverOnline`, `driverLocation`, dan `ride` (atau `null`). `sequence` memungkinkan aplikasi mengabaikan update yang lebih lama saat HTTP dan WebSocket tiba dengan urutan berbeda.
+Statuses: requested, accepted, arrived, in_progress, completed, cancelled.
+Customer actions: create (requires pickup and dropoff), cancel, reset.
+Driver actions: online, offline, accept, arrive, start, complete, location (requires location).
+Points use JSON {"latitude":-6.2088,"longitude":106.8456}. A snapshot contains sequence, driverOnline, driverLocation, and ride (or null). The sequence lets apps ignore stale updates when HTTP and WebSocket messages arrive out of order.
 
-Saat Customer membuat pesanan, server mengambil geometri jalan OpenStreetMap dari OSRM (`ARAH_ROUTING_URL`, default `https://router.project-osrm.org`) dan menyimpannya pada pesanan. Aksi Driver `start` memicu backend mengirim posisi simulasi setiap 100 ms selama 16 detik mengikuti geometri rute itu. Kedua aplikasi menggambar geometri yang sama sebagai polyline dan menggerakkan ikon mobil di atasnya. Aplikasi menghentikan pembaruan GPS perangkat selama status `in_progress` agar tidak menimpa simulasi.
+When a Customer places an order, the server retrieves road geometry from OSRM (ARAH_ROUTING_URL, default https://router.project-osrm.org) and stores it with the ride. The Driver start action triggers simulated location updates every 100 ms for 16 seconds along the route geometry. Both apps draw the same geometry as a polyline and move the car icon along it. The apps pause the Driver device's GPS updates while the ride is in_progress so they do not overwrite the simulation.
 
-Endpoint OSRM publik hanya untuk demo dan dapat membatasi pemakaian. Untuk produksi, host OSRM sendiri atau pilih layanan routing ber-SLA; lokasi jemput dan tujuan dikirim ke endpoint routing yang dikonfigurasi.
+The public OSRM endpoint is for demos only and may limit usage. For production, host OSRM yourself or choose a routing service with an SLA; pickup and destination locations are sent to the configured routing endpoint.
 
-## Pencarian tempat (Photon)
+## Place search (Photon)
 
-- `GET /v1/places/search?q=<kata kunci>&lat=<opsional>&lon=<opsional>` → `{"results":[{"name","displayName","point"}]}`. Kata kunci 2–160 karakter; maksimal 8 hasil; `lat` dan `lon` opsional dan harus dikirim berpasangan.
-- `GET /v1/places/reverse?lat=<lat>&lon=<lon>` → satu `PlaceResult`; `404` jika tidak ada kecocokan.
-- Input tidak valid → `400`; upstream timeout (4 detik), non-2xx, atau JSON rusak → `502` dengan pesan generik (isi respons upstream tidak diteruskan).
-- `ARAH_GEOCODER_URL` menentukan basis URL Photon. Default `https://photon.komoot.io` (demo publik) **hanya untuk pengembangan**. Produksi memerlukan layanan Photon terkelola atau self-hosted, karena teks pencarian dan titik peta dikirim ke endpoint tersebut.
+- GET /v1/places/search?q=query&lat=optional&lon=optional → {"results":[{"name","displayName","point"}]}. Query length must be 2–160 characters; at most 8 results are returned; lat and lon are optional but must be provided together.
+- GET /v1/places/reverse?lat=latitude&lon=longitude → one PlaceResult; returns 404 when there is no match.
+- Invalid input → 400; upstream timeout (4 seconds), non-2xx response, or invalid JSON → 502 with a generic message (the upstream response body is not forwarded).
+- ARAH_GEOCODER_URL sets the Photon base URL. The default, https://photon.komoot.io, is a public demo endpoint for development only. Production requires a managed or self-hosted Photon service because search terms and map points are sent to that endpoint.
 
-- `ARAH_GEOCODER_PROVIDER` memilih penyedia: `photon` (default) atau `nominatim`. Dengan `nominatim`, `ARAH_GEOCODER_URL` default ke `https://nominatim.openstreetmap.org` (dev saja; kebijakan penggunaannya membatasi 1 request/detik dan mewajibkan User-Agent, keduanya sudah dipenuhi backend). Hasil dibatasi ke Indonesia dan label RT/RW/kode pos dibuang. API publik Photon (`photon.komoot.io/api`) dapat tidak merespons; pakai `ARAH_GEOCODER_PROVIDER=nominatim` untuk pengembangan, atau Photon sendiri.
+- ARAH_GEOCODER_PROVIDER selects the provider: photon (default) or nominatim. With nominatim, ARAH_GEOCODER_URL defaults to https://nominatim.openstreetmap.org (development only; its usage policy limits requests to one per second and requires a User-Agent, both of which the backend provides). Results are limited to Indonesia, and RT/RW/postal-code labels are removed. The public Photon API (photon.komoot.io/api) may not respond; use ARAH_GEOCODER_PROVIDER=nominatim for development or run your own Photon service.
 
-Contoh Nominatim: `ARAH_GEOCODER_PROVIDER=nominatim go run .`
+Nominatim example:
 
-Contoh lokal dengan Photon sendiri: `ARAH_GEOCODER_URL=http://127.0.0.1:2322 go run .`
+~~~sh
+ARAH_GEOCODER_PROVIDER=nominatim go run .
+~~~
 
-Contoh siklus tanpa aplikasi:
+Local self-hosted Photon example:
 
-```sh
+~~~sh
+ARAH_GEOCODER_URL=http://127.0.0.1:2322 go run .
+~~~
+
+Example flow without the apps:
+
+~~~sh
 curl -X POST http://127.0.0.1:18080/v1/actions -H 'Content-Type: application/json' -d '{"role":"driver","action":"online"}'
 curl -X POST http://127.0.0.1:18080/v1/actions -H 'Content-Type: application/json' -d '{"role":"customer","action":"create","pickup":{"latitude":-6.2088,"longitude":106.8456},"dropoff":{"latitude":-6.1754,"longitude":106.8272}}'
 curl -X POST http://127.0.0.1:18080/v1/actions -H 'Content-Type: application/json' -d '{"role":"driver","action":"accept"}'
-```
+~~~
 
-## Rekomendasi backend Go produksi
+## Production recommendations for the Go backend
 
-Gunakan **HTTPS untuk tindakan dan WebSocket/WSS untuk update perjalanan ke aplikasi**. WebSocket adalah koneksi dua arah langsung ke perangkat; RabbitMQ adalah broker antarlayanan, bukan pengganti koneksi realtime ke aplikasi. Saat satu proses Go cukup, broadcast lokal seperti demo ini paling sederhana. Saat menjadi beberapa instance, gunakan Redis Pub/Sub atau broker serupa untuk fan-out antargateway; simpan status perjalanan dan lokasi terakhir di PostgreSQL/PostGIS agar klien yang tersambung ulang bisa mengambil snapshot. Jika nanti ada tugas asinkron yang perlu retry dan antrean tahan gangguan (misalnya notifikasi, bukti perjalanan, atau analitik), RabbitMQ cocok untuk pekerjaan itu.
+Use **HTTPS for actions and WebSocket/WSS for live ride updates to apps**. A WebSocket is a direct two-way connection to a device; RabbitMQ is a service-to-service broker, not a replacement for a real-time connection to an app. While a single Go process is sufficient, a local broadcast like this demo is the simplest option. When running multiple instances, use Redis Pub/Sub or a similar broker to fan out across gateways; store ride state and the latest location in PostgreSQL/PostGIS so reconnecting clients can retrieve a snapshot. If asynchronous jobs need retries and durable queues later (for example, notifications, ride receipts, or analytics), RabbitMQ is a good fit.
 
-Sebelum rilis: tambah autentikasi Customer/Driver, otorisasi per pesanan dan kanal, pemilihan Driver tanpa race, idempotency key untuk aksi, simpan status durable, batas frekuensi dan validasi lokasi, heartbeat/reconnect WebSocket, push APNs/FCM saat aplikasi tidak aktif, TLS, observability, kebijakan retensi lokasi, serta pemisahan lingkungan demo dan produksi. Endpoint demo saat ini tidak memenuhi persyaratan tersebut.
+Before release, add Customer/Driver authentication, per-ride and per-channel authorization, race-safe Driver selection, idempotency keys for actions, durable state storage, location validation and rate limits, WebSocket heartbeat/reconnect handling, APNs/FCM push notifications when the app is inactive, TLS, observability, a location-retention policy, and separation between demo and production environments. The current demo endpoints do not meet these requirements.
 
-## Hasil verifikasi pencarian tempat (2026-10-15)
+## Place search verification results (2026-10-15)
 
-- Otomatis: Go: `go test ./...` lulus.
-- Backend dengan Photon palsu lokal (`ARAH_GEOCODER_URL`): `/v1/places/search` dan `/v1/places/reverse` memetakan hasil dengan benar; kata kunci kosong → 400.
-- **Belum diverifikasi**: Photon publik (`photon.komoot.io`) tidak terjangkau dari mesin ini saat pengujian (backend mengembalikan 502 generik), sehingga pencarian alamat/POI Indonesia sungguhan dan ketersediaan produksi tidak teruji. Uji emulator/simulator end-to-end (pilih titik, buat pesanan, label di app Driver, tap peta) juga belum dijalankan.
+- Automated: Go: go test ./... passed.
+- With a local mock Photon server (ARAH_GEOCODER_URL), /v1/places/search and /v1/places/reverse mapped results correctly; an empty query returned 400.
+- **Not verified:** The public Photon service (photon.komoot.io) was unreachable during testing (the backend returned a generic 502), so real Indonesian address/POI search and production availability were not tested. End-to-end emulator/simulator testing (select a point, create an order, show the label in the Driver app, and tap the map) has not been run.
